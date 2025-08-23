@@ -17,10 +17,12 @@
 #include "ns3/netanim-module.h"
 #include "ns3/mobility-module.h"
 #include "ns3/flow-monitor-module.h"
+#include "image_classifier.h"
 #include <fstream>
 #include <vector>
 #include <map>
 #include <string>
+#include <filesystem>
 
 using namespace ns3;
 
@@ -268,7 +270,34 @@ void ImageReceiverApp::HandleRead(Ptr<Socket> socket)
     }
 }
 
-// Function to simulate image data (since we're not using actual classifier)
+// Function to load actual image data from file
+std::vector<uint8_t> LoadImageFile(const std::string& imagePath)
+{
+    std::ifstream file(imagePath, std::ios::binary);
+    if (!file.is_open())
+    {
+        NS_LOG_ERROR("Cannot open image file: " << imagePath);
+        return std::vector<uint8_t>();
+    }
+    
+    // Get file size
+    file.seekg(0, std::ios::end);
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    
+    // Read file into vector
+    std::vector<uint8_t> imageData(size);
+    if (file.read(reinterpret_cast<char*>(imageData.data()), size))
+    {
+        NS_LOG_INFO("Loaded image file: " << imagePath << " (size: " << size << " bytes)");
+        return imageData;
+    }
+    
+    NS_LOG_ERROR("Failed to read image file: " << imagePath);
+    return std::vector<uint8_t>();
+}
+
+// Function to simulate image data (fallback when real images are not available)
 std::vector<uint8_t> GenerateSimulatedImageData(FootballerID playerId, uint32_t imageSize)
 {
     std::vector<uint8_t> imageData(imageSize);
@@ -283,6 +312,48 @@ std::vector<uint8_t> GenerateSimulatedImageData(FootballerID playerId, uint32_t 
     return imageData;
 }
 
+// Function to process images in a directory and classify them
+std::map<FootballerID, std::vector<std::string>> ProcessImageDirectory(const std::string& imageDir, ImageClassifier& classifier)
+{
+    std::map<FootballerID, std::vector<std::string>> classifiedImages;
+    
+    if (!std::filesystem::exists(imageDir))
+    {
+        NS_LOG_WARN("Image directory does not exist: " << imageDir);
+        return classifiedImages;
+    }
+    
+    NS_LOG_INFO("Processing images in directory: " << imageDir);
+    
+    for (const auto& entry : std::filesystem::directory_iterator(imageDir))
+    {
+        if (entry.is_regular_file())
+        {
+            std::string filePath = entry.path().string();
+            std::string extension = entry.path().extension().string();
+            
+            // Check if it's an image file
+            if (extension == ".jpg" || extension == ".jpeg" || extension == ".png" || 
+                extension == ".JPG" || extension == ".JPEG" || extension == ".PNG")
+            {
+                FootballerID playerId = classifier.ClassifyImage(filePath);
+                if (playerId != UNKNOWN)
+                {
+                    classifiedImages[playerId].push_back(filePath);
+                    NS_LOG_INFO("Classified " << filePath << " as " << 
+                               ImageClassifier::FootballerIDToString(playerId));
+                }
+                else
+                {
+                    NS_LOG_WARN("Could not classify image: " << filePath);
+                }
+            }
+        }
+    }
+    
+    return classifiedImages;
+}
+
 int main(int argc, char *argv[])
 {
     CommandLine cmd;
@@ -295,6 +366,10 @@ int main(int argc, char *argv[])
     double simulationTime = 10.0; // seconds
     uint32_t imageSize = 50000; // bytes (simulated image size)
     bool enableNetAnim = true;
+    std::string imageDir = "./images"; // Directory containing footballer images
+    std::string trainDir = "./training_images"; // Directory for training images
+    std::string modelPath = "./footballer_model.yml"; // Path to save/load trained model
+    bool useRealImages = false; // Use real images if available
     
     cmd.AddValue("nNodes", "Number of nodes", nNodes);
     cmd.AddValue("packetSize", "Packet size in bytes", packetSize);
@@ -303,11 +378,96 @@ int main(int argc, char *argv[])
     cmd.AddValue("simulationTime", "Simulation time in seconds", simulationTime);
     cmd.AddValue("imageSize", "Simulated image size in bytes", imageSize);
     cmd.AddValue("enableNetAnim", "Enable NetAnim output", enableNetAnim);
+    cmd.AddValue("imageDir", "Directory containing images to classify", imageDir);
+    cmd.AddValue("trainDir", "Directory containing training images", trainDir);
+    cmd.AddValue("modelPath", "Path to trained model file", modelPath);
+    cmd.AddValue("useRealImages", "Use real image classification", useRealImages);
     
     cmd.Parse(argc, argv);
     
     // Initialize simulation start time
     simulationStartTime = Simulator::Now();
+    
+    NS_LOG_INFO("Creating " << nNodes << " nodes.");
+    
+    // Initialize image classifier
+    ImageClassifier classifier;
+    std::map<FootballerID, std::vector<std::string>> imagesToSend;
+    
+    if (useRealImages)
+    {
+        NS_LOG_INFO("Initializing image classifier...");
+        
+        // Try to load existing model first
+        if (std::filesystem::exists(modelPath))
+        {
+            NS_LOG_INFO("Loading existing model from: " << modelPath);
+            classifier.Initialize(modelPath);
+        }
+        else if (std::filesystem::exists(trainDir))
+        {
+            NS_LOG_INFO("Training new model with images from: " << trainDir);
+            
+            // Setup training data structure
+            std::map<FootballerID, std::vector<std::string>> trainingData;
+            
+            // Look for organized training folders
+            for (int i = 0; i < 5; ++i)
+            {
+                FootballerID playerId = static_cast<FootballerID>(i);
+                std::string playerDir = trainDir + "/" + ImageClassifier::FootballerIDToString(playerId);
+                
+                if (std::filesystem::exists(playerDir))
+                {
+                    for (const auto& entry : std::filesystem::directory_iterator(playerDir))
+                    {
+                        if (entry.is_regular_file())
+                        {
+                            std::string extension = entry.path().extension().string();
+                            if (extension == ".jpg" || extension == ".jpeg" || extension == ".png" ||
+                                extension == ".JPG" || extension == ".JPEG" || extension == ".PNG")
+                            {
+                                trainingData[playerId].push_back(entry.path().string());
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (!trainingData.empty())
+            {
+                classifier.TrainWithImages(trainingData);
+                classifier.SaveModel(modelPath);
+            }
+            else
+            {
+                NS_LOG_WARN("No training data found. Falling back to simulated mode.");
+                useRealImages = false;
+            }
+        }
+        else
+        {
+            NS_LOG_WARN("No model or training data found. Falling back to simulated mode.");
+            useRealImages = false;
+        }
+        
+        // Process images to be sent
+        if (useRealImages && std::filesystem::exists(imageDir))
+        {
+            imagesToSend = ProcessImageDirectory(imageDir, classifier);
+        }
+    }
+    
+    if (!useRealImages || imagesToSend.empty())
+    {
+        NS_LOG_INFO("Using simulated image data mode.");
+        // Create simulated image assignments
+        for (int i = 0; i < 5; ++i)
+        {
+            FootballerID playerId = static_cast<FootballerID>(i);
+            imagesToSend[playerId].push_back("simulated_" + ImageClassifier::FootballerIDToString(playerId) + ".jpg");
+        }
+    }
     
     NS_LOG_INFO("Creating " << nNodes << " nodes.");
     
@@ -381,7 +541,7 @@ int main(int argc, char *argv[])
                     << " on node " << i);
     }
     
-    // Install sender applications (simulate sending to each receiver)
+    // Install sender applications (process classified images)
     ApplicationContainer senderApps;
     
     for (uint32_t i = 1; i < nNodes; ++i)
@@ -393,20 +553,60 @@ int main(int argc, char *argv[])
         receiverIP << "10.1." << i << ".2";
         Address receiverAddress = InetSocketAddress(Ipv4Address(receiverIP.str().c_str()), port);
         
-        Ptr<ImageSenderApp> senderApp = CreateObject<ImageSenderApp>();
-        senderApp->Setup(receiverAddress, packetSize, 0, DataRate(dataRate), playerId);
-        
-        // Generate simulated image data for this player
-        std::vector<uint8_t> imageData = GenerateSimulatedImageData(playerId, imageSize);
-        senderApp->SetImageData(imageData);
-        
-        nodes.Get(0)->AddApplication(senderApp);
-        senderApp->SetStartTime(Seconds(2.0 + i * 0.5)); // Stagger transmissions
-        senderApp->SetStopTime(Seconds(simulationTime));
-        senderApps.Add(senderApp);
-        
-        NS_LOG_INFO("Installed sender for " << footballerNames[playerId] 
-                    << " image to node " << i);
+        // Process all images for this player
+        if (imagesToSend.find(playerId) != imagesToSend.end())
+        {
+            for (const auto& imagePath : imagesToSend[playerId])
+            {
+                Ptr<ImageSenderApp> senderApp = CreateObject<ImageSenderApp>();
+                senderApp->Setup(receiverAddress, packetSize, 0, DataRate(dataRate), playerId);
+                
+                // Load actual image data if using real images
+                std::vector<uint8_t> imageData;
+                if (useRealImages && imagePath.find("simulated_") == std::string::npos)
+                {
+                    imageData = LoadImageFile(imagePath);
+                    if (imageData.empty())
+                    {
+                        // Fallback to simulated data
+                        imageData = GenerateSimulatedImageData(playerId, imageSize);
+                    }
+                }
+                else
+                {
+                    imageData = GenerateSimulatedImageData(playerId, imageSize);
+                }
+                
+                senderApp->SetImageData(imageData);
+                
+                nodes.Get(0)->AddApplication(senderApp);
+                double startTime = 2.0 + i * 0.5 + senderApps.GetN() * 0.1; // Stagger transmissions
+                senderApp->SetStartTime(Seconds(startTime));
+                senderApp->SetStopTime(Seconds(simulationTime));
+                senderApps.Add(senderApp);
+                
+                NS_LOG_INFO("Installed sender for " << footballerNames[playerId] 
+                           << " image (" << imagePath << ") to node " << i
+                           << " (size: " << imageData.size() << " bytes)");
+            }
+        }
+        else
+        {
+            // Fallback: send simulated data
+            Ptr<ImageSenderApp> senderApp = CreateObject<ImageSenderApp>();
+            senderApp->Setup(receiverAddress, packetSize, 0, DataRate(dataRate), playerId);
+            
+            std::vector<uint8_t> imageData = GenerateSimulatedImageData(playerId, imageSize);
+            senderApp->SetImageData(imageData);
+            
+            nodes.Get(0)->AddApplication(senderApp);
+            senderApp->SetStartTime(Seconds(2.0 + i * 0.5));
+            senderApp->SetStopTime(Seconds(simulationTime));
+            senderApps.Add(senderApp);
+            
+            NS_LOG_INFO("Installed fallback sender for " << footballerNames[playerId] 
+                       << " to node " << i);
+        }
     }
     
     // Enable routing

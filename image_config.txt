@@ -1,0 +1,8 @@
+# Footballer Image Configuration
+# Format: PlayerName=ImagePath1,ImagePath2,...
+
+Messi=training_images/Messi/messi1.jpg,training_images/Messi/messi2.jpg
+Ronaldo=training_images/Ronaldo/ronaldo1.jpg,training_images/Ronaldo/ronaldo2.jpg
+Neymar=training_images/Neymar/neymar1.jpg,training_images/Neymar/neymar2.jpg
+Mbappe=training_images/Mbappe/mbappe1.jpg,training_images/Mbappe/mbappe2.jpg
+Haaland=training_images/Haaland/haaland1.jpg,training_images/Haaland/haaland2.jpg
