@@ -97,7 +97,7 @@ make -f Makefile-compact run-sim
 
 ```bash
 # Open NetAnim to see the network visualization
-netanim compact-classifier.xml
+netanim compact-football.xml
 ```
 
 ## 🎮 What You'll See
@@ -318,3 +318,4 @@ The project successfully shows that even complex networking concepts can be made
 **Happy networking!** ⚽🌐🚀
 
 *Built with ❤️ using NS-3 and modern C++*
+
